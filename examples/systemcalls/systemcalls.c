@@ -1,4 +1,10 @@
 #include "systemcalls.h"
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -11,13 +17,15 @@ bool do_system(const char *cmd)
 {
 
 /*
- * TODO  add your code here
  *  Call the system() function with the command set in the cmd
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
-
-    return true;
+    int result = system(cmd);
+    if(result==0)
+        return true;
+    else
+        return false;
 }
 
 /**
@@ -50,7 +58,6 @@ bool do_exec(int count, ...)
     command[count] = command[count];
 
 /*
- * TODO:
  *   Execute a system command by calling fork, execv(),
  *   and wait instead of system (see LSP page 161).
  *   Use the command[0] as the full path to the command to execute
@@ -58,6 +65,43 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+
+    int status = -1;
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid == -1) {
+        printf("Error creating a child process:%s\n", strerror(errno));
+        va_end(args);
+        return false;
+    } 
+    if (pid==0) {
+        printf("Child process created successfully\n");
+        if (execv(command[0], command) == -1)
+        {
+            printf("Error executing execv: %s\n", strerror(errno));
+            va_end(args);
+            exit(-1);
+        }
+    } else {
+        if (wait(&status) == -1) {
+            printf("Error executing wait: %s\n", strerror(errno));
+            va_end(args);
+            return false;
+        }
+        if (WIFEXITED(status))
+        {
+            if (0 == WEXITSTATUS(status))
+            {
+                va_end(args);
+                return true;
+            }
+            else
+            {
+                va_end(args);
+                return false;
+            }
+        }
+    }
 
     va_end(args);
 
@@ -86,13 +130,58 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 
 
 /*
- * TODO
  *   Call execv, but first using https://stackoverflow.com/a/13784315/1446624 as a refernce,
  *   redirect standard out to a file specified by outputfile.
  *   The rest of the behaviour is same as do_exec()
  *
 */
-
+    int status = -1;
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    if (fd==-1)
+    {
+        printf("Error opening file:%s\n", strerror(errno));
+        va_end(args);
+        return false;
+    }
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid==-1) {
+        printf("Error creating a child process:%s\n", strerror(errno));
+        close(fd);
+        va_end(args);
+        return false;
+    }
+    if (pid==0) {
+        printf("Child process created successfully\n");
+        if (dup2(fd, 1)==-1) {
+            printf("Error executing dup2: %s\n", strerror(errno));
+            close(fd);
+            va_end(args);
+            return false;
+        } if (execv(command[0], command) == -1) {
+            printf("Error executing execv: %s\n", strerror(errno));
+            close(fd);
+            va_end(args);
+            return false;
+        }
+    } else {
+        close(fd);
+        if (wait(&status) == -1) {
+            printf("Error executing wait: %s\n", strerror(errno));
+            va_end(args);
+            return false;
+        }
+        if (WIFEXITED(status)) {
+            va_end(args);   
+            if (WEXITSTATUS(status) == 0) {
+                printf("Child process exited with status %d\n", WEXITSTATUS(status));
+                return true;
+            } else {
+                printf("Child process did not exit normally\n");
+                return false;
+            }
+        }
+    }
     va_end(args);
 
     return true;
