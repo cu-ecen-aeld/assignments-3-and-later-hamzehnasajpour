@@ -1,17 +1,26 @@
-# Set Compiler
-CC = $(CROSS_COMPILE)
+DEFAULT_CC = gcc 
+CC = $(DEFAULT_CC)
 
-# Set Flags
-FLAGS = -g -Wall -I/
+ifdef CROSS_COMPILE
+	CC = $(CROSS_COMPILE)$(DEFAULT_CC)
+endif
 
-all: writer
-	@echo "Build done!"
+CFLAGS = -Wall -Werror
+LDFLAGS = 
 
-writer: writer.o
-	$(CC)gcc $(FLAGS) writer.o -o writer
+SRCS = writer.c
 
-writer.o: writer.c
-	$(CC)gcc $(FLAGS) -c writer.c -o writer.o
+OBJS = $(SRCS:.c=.o)
+
+TARGET = writer
+
+all: $(TARGET)
+		
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^
 
 clean:
-	rm -f *.o *.out writer
+	rm -f $(OBJS) $(TARGET)
