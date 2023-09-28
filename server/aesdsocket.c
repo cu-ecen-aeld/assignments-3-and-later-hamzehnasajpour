@@ -1,229 +1,166 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include <string.h>
+#include <errno.h>
 #include <syslog.h>
+#include <signal.h>
+#include <unistd.h>
+#include <netdb.h>
+#include <sys/stat.h>  
+#include <fcntl.h>    
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/stat.h>  
-#include <string.h>
-#include <netdb.h>
-#include <stdlib.h>
-#include <errno.h>
-#include <signal.h>
-#include <stdbool.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <fcntl.h>    
 #include <netinet/in.h>
+#include <arpa/inet.h>
 
-#define BUF_SIZE (1024 * 1024)
-#define FILE_PATH ("/var/tmp/aesdsocketdata")
+#define PORT 9000
+#define FILE_PATH "/var/tmp/aesdsocketdata"
 
-static bool disconnect = false;
-static int sockfd;
-static int sockfd_connected;
-static char *buf;
-static char ipaddr[INET_ADDRSTRLEN];
+#define BUFFER_SIZE 1024
+#define PACKET_SIZE 20 * 1024
 
-static void signal_handler(int signal_number) {
-	if (signal_number == SIGINT || signal_number == SIGTERM) {
-		syslog(LOG_INFO, "Closed connection from %s\n", ipaddr);
-		shutdown(sockfd, SHUT_RDWR);
-		shutdown(sockfd_connected, SHUT_RDWR);
-		remove(FILE_PATH);
-		disconnect = true;
-	}
+bool accept_conn_loop = true;
+
+int accept_conn(int sockfd, struct sockaddr *addr_cli) {
+    int addrlen = sizeof(*addr_cli);
+    return accept(sockfd, addr_cli, (socklen_t *)(&addrlen));
 }
 
-static bool send_data(void) {
-	FILE* file;
-
-	if ((file = fopen(FILE_PATH, "r")) == NULL) {
-		printf("file open failed\n");
-		return false;
-	}
-
-	while(fgets(buf, BUF_SIZE, file) != NULL) {
-		if (send(sockfd_connected, buf, strlen(buf), 0) == -1) {
-			printf("send is failed\n");
-			return false;
-		}
-	}
-								
-	if (fclose(file) != 0) {
-		printf("failed to close file");
-		return false;
-	}
-
-	return true;
+static void signal_handler(int sig_no) {
+    if ((sig_no == SIGINT) || (sig_no == SIGTERM)) {
+        syslog(LOG_INFO, "Caught signal, exiting");
+        accept_conn_loop = false;
+    }
 }
 
-static bool write_file(int data_size){
-	FILE* file;
-	
-	if ((file = fopen(FILE_PATH, "a+")) == NULL) {
-		printf("failed to open write file");
-		return false;
-	}
-
-	char* cur_buf = buf;
-	for (int i = 0; i < data_size; i++) {
-		if (buf[i] == '\n'){
-			buf[i] = '\0';
-			//printf("write string: %s\n",cur_buf);
-
-			if (fprintf(file, "%s\n", cur_buf) < 0) {
-				printf("failed to write file");
-				return false;
-			}
-
-			cur_buf = &buf[i + 1];
-		}
-	}
-
-	if (fclose(file) != 0) {
-		printf("failed to close file");
-		return false;
-	}
-
-	return true;
+void get_ipcli(const struct sockaddr *addr_cli, char *s_ipcli) {
+    struct sockaddr_in *pV4Addr = (struct sockaddr_in *)addr_cli;
+    struct in_addr ipcli = pV4Addr->sin_addr;
+    char str_ipcli[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &ipcli, str_ipcli, INET_ADDRSTRLEN);
+    strcpy(s_ipcli, str_ipcli);
 }
-								
 
-int main(int argc, char * argv[]) {
-	bool daemon_mode = false;
-	int pid = 0;
-	int result = 0;
-	struct sigaction new_action;
-	struct addrinfo hints;
+void socket_daemon() {
+    // PID: Process ID
+    // SID: Session ID
+    pid_t pid, sid;
+    pid = fork();
+    if (pid < 0) {
+        exit(EXIT_FAILURE);
+    }
+    if (pid > 0) {
+        exit(EXIT_SUCCESS);
+    }
+    
+    sid = setsid();
+    if (sid < 0) {
+        exit(EXIT_FAILURE);
+    }
+    if ((chdir("/")) < 0) {
+        exit(EXIT_FAILURE);
+    }
 
-	if ((argc == 2) && (!strcmp(argv[1], "-d")))
-		daemon_mode = true;
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+}
 
-	memset(&new_action, 0, sizeof(struct sigaction));
-	new_action.sa_handler = signal_handler;
+int main(int argc, char **argv)
+{
+    char port[5];
+    memset(port, 0, sizeof port);
+    sprintf(port, "%d", PORT);
 
-	if (sigaction(SIGTERM, &new_action, NULL) != 0) {
-		perror("failed to register SIGTERM signal handler");
-		return -1;
-	}
+    struct addrinfo* addr_info = NULL;
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
 
-	if (sigaction(SIGINT, &new_action, NULL) != 0) {
-		perror("failed to register SIGINT signal handler");
-		return -1;
-	}
-			
-	memset(&hints, 0, sizeof(struct addrinfo));
-	hints.ai_family = AF_INET;
-	hints.ai_socktype = SOCK_STREAM;
-	hints.ai_flags = AI_PASSIVE;
-	
-	printf("start aesdsocket\n");
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if(sockfd==-1)
+        exit(-1);
 
-	if ((sockfd = socket(hints.ai_family, hints.ai_socktype, 0)) == -1) {
-		perror("failed to create socket");
-		return -1;
-	}
-	
-	printf("create socket\n");
-	
-	struct addrinfo *servinfo;
+    int rc_bind = getaddrinfo(NULL, port, &hints, &addr_info); 
+    if(rc_bind == 0)
+        rc_bind = bind(sockfd, addr_info->ai_addr, sizeof(struct addrinfo));
 
-	int option = 1;
-	if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(int)) == -1) {
-		perror("failed to set socket option");
-		return -1;
-	}
-	
-	int getaddrinfo_err;
-	if ((getaddrinfo_err = getaddrinfo(NULL, "9000", &hints, &servinfo))) {
-		printf("%d\n", getaddrinfo_err);
-		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(getaddrinfo_err));
-		return -1;
-	}
+    if(rc_bind==-1)
+        exit(-1);
 
-	const char* p_ip_addr;
-	if ((p_ip_addr = inet_ntop(AF_INET, servinfo->ai_addr, ipaddr, INET_ADDRSTRLEN)) == NULL) {
-		perror("failed to convert ipv4 string");
-		return -1;
-	}
-	
-	syslog(LOG_INFO, "Accepted connection from %s\n", p_ip_addr);
-	printf("ip: %s\n", p_ip_addr);
-	
-	if (bind(sockfd, servinfo->ai_addr, servinfo->ai_addrlen) == -1) {
-		perror("failed to bind socket");
-		return -1;
-	}
+    openlog("syslog_socket_assignment", LOG_PID, LOG_USER);
 
-	printf("bind socket\n");
-	
-	freeaddrinfo(servinfo);
+    struct sigaction new_action;
+    memset((void *)&new_action, 0, sizeof(struct sigaction));
+    new_action.sa_handler = signal_handler;
+    if ((sigaction(SIGTERM, &new_action, NULL) != 0) || (sigaction(SIGINT, &new_action, NULL) != 0)) {
+        return 0;
+    }
 
-	if (daemon_mode)
-		pid = fork();
+    if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        socket_daemon();
+    }
 
-	if (pid == 0) {
-		if (listen(sockfd, 5) == -1) {
-			perror("failed to listen socket");
-			return -1;
-		}
-		
-		printf("listen\n");
+    int rc_listen = listen(sockfd, 50);
+    if(rc_listen==-1)
+        exit(-1);
 
-		struct sockaddr sockaddr_connected;
-		socklen_t sockaddrlen_connected = sizeof(struct sockaddr);
-		
-		openlog (NULL, 0, LOG_USER);
-		buf = malloc(sizeof(char) * BUF_SIZE);
+    int data_fd = open(FILE_PATH, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+    if(data_fd==-1)
+        exit(-1);
 
-		while (!disconnect) {
-			if ((sockfd_connected = accept(sockfd, &sockaddr_connected, &sockaddrlen_connected)) == -1){
-				perror("failed to listen socket");
-				result = -1;
-				break;
-			}	
-			
-			printf("accept\n");
+    while (accept_conn_loop) {
+        struct sockaddr addr_cli;
+        int connfd = accept_conn(sockfd, &addr_cli);
+        if (connfd == -1) {
+            shutdown(sockfd, SHUT_RDWR);
+            continue;
+        }
 
-			while(true){
-				int num_bytes_received;
+        char str_ipcli[BUFFER_SIZE];
+        get_ipcli(&addr_cli, str_ipcli);
+        syslog(LOG_INFO, "Accepted connection from %s", str_ipcli);
 
-				if ((num_bytes_received = recv(sockfd_connected, buf, BUF_SIZE, 0)) < 0) {
-					perror("failed to receive data");
-					disconnect = true;
-					result = -1;
-					break;
-				} else if (num_bytes_received == 0) {
-					break;
-				}
-			
-				printf("received\n");
-				
-				if (num_bytes_received > BUF_SIZE){
-					fprintf(stderr, "packet is exceed the buffer size!");
-					disconnect = true;
-					result = -1;
-					break;
-				}
-				
-				if (write_file(num_bytes_received) == false){
-					fprintf(stderr, "failed to write file");
-					disconnect = true;
-					result = -1;
-					break;
-				}
-		
-				if (send_data() == false){
-					fprintf(stderr, "failed to send data");
-					disconnect = true;
-					result = -1;
-					break;
-				}
-			}
-		}
-		
-		free(buf);
-		closelog();
-	}
+        while (true) {
+            /// receive data - write to file
+            char recv_buff[BUFFER_SIZE + 1];
+            memset((void *)recv_buff, 0, BUFFER_SIZE + 1);
+            int rc_recvdata = recv(connfd, recv_buff, BUFFER_SIZE, 0);
+            if(rc_recvdata==-1)
+                exit(-1);
+            int rc_writefile = write(data_fd, (const void *)recv_buff, rc_recvdata);
+            if(rc_writefile==-1)
+                exit(-1);
 
-	return result;
+            char *pch = strstr(recv_buff, "\n");
+            if (pch != NULL)
+                break;
+        }
+
+        int data_size = lseek(data_fd, 0L, SEEK_CUR);
+        char send_buff[BUFFER_SIZE];
+        lseek(data_fd, 0L, SEEK_SET);
+        do {
+            int rc_readfile = read(data_fd, send_buff, BUFFER_SIZE);
+            if(rc_readfile==-1)
+                exit(-1);
+            int rc_senddata = send(connfd, send_buff, rc_readfile, 0);
+            if(rc_senddata==-1)
+                exit(-1);
+            data_size -= rc_readfile;
+            memset(send_buff, 0, BUFFER_SIZE);
+        } while (data_size > 0);
+
+        syslog(LOG_INFO, "Closed connection from %s", str_ipcli);
+    }
+
+    /// shutdown
+    close(data_fd);
+    closelog();
+    remove(FILE_PATH);
+
+    return 0;
 }
