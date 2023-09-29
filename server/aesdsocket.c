@@ -62,9 +62,9 @@ void socket_daemon() {
         exit(EXIT_FAILURE);
     }
 
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
+    // close(STDIN_FILENO);
+    // close(STDOUT_FILENO);
+    // close(STDERR_FILENO);
 }
 
 int main(int argc, char **argv)
@@ -72,6 +72,7 @@ int main(int argc, char **argv)
     char port[5];
     memset(port, 0, sizeof port);
     sprintf(port, "%d", PORT);
+    printf("socket assignment ...\n");
 
     struct addrinfo* addr_info = NULL;
     struct addrinfo hints;
@@ -83,6 +84,7 @@ int main(int argc, char **argv)
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if(sockfd==-1)
         exit(-1);
+    printf("socket opened ...\n");
 
     int rc_bind = getaddrinfo(NULL, port, &hints, &addr_info); 
     if(rc_bind == 0)
@@ -90,9 +92,9 @@ int main(int argc, char **argv)
 
     if(rc_bind==-1)
         exit(-1);
+    printf("socket binded ...\n");
 
     openlog("syslog_socket_assignment", LOG_PID, LOG_USER);
-
     struct sigaction new_action;
     memset((void *)&new_action, 0, sizeof(struct sigaction));
     new_action.sa_handler = signal_handler;
