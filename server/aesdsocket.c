@@ -101,16 +101,19 @@ int main(int argc, char **argv)
     }
 
     if (argc == 2 && strcmp(argv[1], "-d") == 0) {
+        printf("Socket Daemon ...\n");
         socket_daemon();
     }
 
     int rc_listen = listen(sockfd, 50);
+    printf("Listening ...\n");
     if(rc_listen==-1)
         exit(-1);
 
     int data_fd = open(FILE_PATH, O_RDWR | O_CREAT | O_TRUNC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
     if(data_fd==-1)
         exit(-1);
+    printf("File opened at %s ...\n", FILE_PATH);
 
     while (accept_conn_loop) {
         struct sockaddr addr_cli;
@@ -119,7 +122,7 @@ int main(int argc, char **argv)
             shutdown(sockfd, SHUT_RDWR);
             continue;
         }
-
+        printf("Connection accepted\n");
         char str_ipcli[BUFFER_SIZE];
         get_ipcli(&addr_cli, str_ipcli);
         syslog(LOG_INFO, "Accepted connection from %s", str_ipcli);
@@ -134,7 +137,7 @@ int main(int argc, char **argv)
             int rc_writefile = write(data_fd, (const void *)recv_buff, rc_recvdata);
             if(rc_writefile==-1)
                 exit(-1);
-
+            printf("data: %s\n", recv_buff);
             char *pch = strstr(recv_buff, "\n");
             if (pch != NULL)
                 break;
